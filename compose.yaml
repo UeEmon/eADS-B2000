@@ -1,0 +1,38 @@
+# ADS-B simulator + receiver. The receiver forwards $PADSB to the eNMEA2000
+# app on the host (TCP 10111). Start eNMEA2000 first (bash Loop-Back.sh or docker compose up).
+name: eadsb2000
+services:
+  simulator:
+    build: .
+    image: eadsb2000:local
+    restart: unless-stopped
+    init: true
+    command: ["python", "-m", "adsb.simulator", "--tcp", "30002",
+              "--count", "${ADSB_COUNT:-20}", "--lat", "${ADSB_LAT:-35.5494}",
+              "--lon", "${ADSB_LON:-139.7798}", "--radius", "${ADSB_RADIUS_NM:-60}"]
+    ports:
+      - "${ADSB_BIND:-127.0.0.1}:30002:30002/tcp"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 30002), 3).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  receiver:
+    build: .
+    image: eadsb2000:local
+    restart: unless-stopped
+    init: true
+    # ADSB_SOURCE: simulator:30002, or a real dump1090/readsb raw feed (host:30002)
+    command: ["python", "-m", "adsb.receiver", "--avr-tcp", "${ADSB_SOURCE:-simulator:30002}",
+              "--forward", "${ENMEA_TARGET:-host.docker.internal:10111}", "--format", "${ADSB_FORMAT:-padsb}", "--quiet"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      simulator:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

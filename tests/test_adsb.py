@@ -78,7 +78,9 @@ def test_simulator_to_tracker_and_ais_bridge():
         assert msg['speed'] == round(state['ground_speed_kt'])
 
 
-def test_receiver_forwards_to_enmea_tcp():
+@pytest.mark.parametrize('fmt,prefix', [('padsb', '$PADSB,840123,,35.0000'),
+                                        ('ais9', '!AIVDM,1,1,,A,')])
+def test_receiver_forwards_to_enmea_tcp(fmt, prefix):
     server = socket.create_server(('127.0.0.1', 0))
     got = []
     def accept():
@@ -86,13 +88,26 @@ def test_receiver_forwards_to_enmea_tcp():
         got.append(conn.makefile().readline())
     t = threading.Thread(target=accept, daemon=True)
     t.start()
-    rx = receiver.Receiver(forward=server.getsockname())
+    rx = receiver.Receiver(forward=server.getsockname(), fmt=fmt)
     icao = 0x840123
     for f in (modes.encode_position(icao, 35.0, 139.0, 5000, False),
               modes.encode_position(icao, 35.0, 139.0, 5000, True)):
         rx.handle(f)
     t.join(5)
-    assert got and got[0].startswith('!AIVDM,1,1,,A,')
+    assert got and got[0].startswith(prefix)
+
+
+def test_padsb_sentence():
+    ac = {'icao': '86D3A1', 'callsign': 'JAL123', 'lat': 35.5494, 'lon': 139.7798, 'altitude_ft': 12500,
+          'ground_speed_kt': 420.04, 'track_deg': 287.0, 'vertical_rate_fpm': -1472, 'category': 3}
+    sentence = mapping.padsb(ac)
+    assert sentence == '$PADSB,86D3A1,JAL123,35.549400,139.779800,12500,420.0,287.0,-1472,3*' + sentence[-2:]
+    body = sentence[1:sentence.index('*')]
+    cs = 0
+    for c in body:
+        cs ^= ord(c)
+    assert sentence.endswith(f'*{cs:02X}')
+    assert mapping.padsb({'icao': '86D3A1'}).startswith('$PADSB,86D3A1,,,,,,,,*')
 
 
 def test_avr_parsing():

@@ -15,3 +15,17 @@ jobs:
       - run: python -m pytest -q
       - run: python -m adsb.simulator --count 5 --seconds 10 --seed 1 --iq traffic.cu8 --noise 0.03
       - run: python -m adsb.receiver --iq traffic.cu8 --quiet
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/wait_padsb.py 10111 5 > padsb.log &
+      - run: docker compose up -d --build --wait
+      - run: |
+          for i in $(seq 60); do grep -q '^OK:' padsb.log && break; sleep 2; done
+          cat padsb.log
+          grep -q '^OK:' padsb.log
+      - if: always()
+        run: docker compose logs --tail=50
+      - if: always()
+        run: docker compose down
