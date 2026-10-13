@@ -7,6 +7,8 @@ CU8 I/Q via the PPM modulator.
     python -m adsb.simulator --count 20 --tcp 30002
     python -m adsb.simulator --count 5 --seconds 30 --iq traffic.cu8
 """
+from __future__ import annotations
+
 import argparse
 import math
 import random

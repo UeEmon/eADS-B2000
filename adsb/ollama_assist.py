@@ -7,6 +7,8 @@
 The answer goes to stdout for a human to review; nothing is written to the
 repository automatically. From a container use http://host.docker.internal:11434.
 """
+from __future__ import annotations
+
 import argparse
 import json
 import os
