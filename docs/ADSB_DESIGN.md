@@ -159,8 +159,9 @@ docker compose up -d --build --wait
 | `ADSB_INPUT` | `--rtltcp` | 受信部の入力種別（`--rtltcp` または `--avr-tcp`） |
 | `ADSB_SOURCE` | sdr-tx:1236 | 受信部の入力元 `host:port` |
 | `ADSB_USB_DEVICE` | 0 | USB直結時のRTL-SDR番号（`compose.usb.yaml`） |
-| `ENMEA_TARGET` | host.docker.internal:10111 | 転送先（eNMEA2000本体のTCP） |
-| `ADSB_FORMAT` | padsb | `padsb` または `ais9` |
+| `ADSB_OUTPUTS` | tcp://host.docker.internal:10111 | 出力先（複数可、7.3節） |
+| `ENMEA_TARGET` | host.docker.internal:10111 | `ADSB_OUTPUTS` 未指定時の本体TCP（旧設定との互換用） |
+| `ADSB_FORMAT` | padsb | 書式を省略した出力先の書式（`padsb` または `ais9`） |
 
 eNMEA2000の `bash Loop-Back.sh` は、eNMEA2000と同じ階層に本リポジトリ（`eADS-B2000`）がある場合、または `ADSB_DIR` を指定した場合に、このComposeも起動します。
 
@@ -184,6 +185,24 @@ ADSB_INPUT=--avr-tcp ADSB_SOURCE=192.168.1.50:30002 docker compose up -d --build
 ```
 
 いずれも出力は `$PADSB` として eNMEA2000本体（TCP 10111）へ入ります。eNMEA2000の `Loop-Back.sh` からは `ADSB_RTL_TCP=host.docker.internal:1234` で同じ切替ができます。
+
+### 7.3 複数の出力先（本体＋iPad等）
+
+受信部は、本体以外にもiPadなど複数の宛先へ同時に出力できます。`--output`（Composeでは `ADSB_OUTPUTS`）に、カンマ区切りで `プロトコル://ホスト:ポート/書式` を並べます。
+
+| 項目 | 指定 |
+|---|---|
+| プロトコル | `tcp`（接続して送信、切断時は5秒後に再接続）、`udp`（ユニキャスト） |
+| 書式 | `padsb`（eNMEA2000本体）、`ais9`（iPad版など `$PADSB` 未対応の受信側。AIS Type 9として表示）。省略すると `--format` の値 |
+| 件数 | 制限なし。1つの宛先が落ちても他の宛先への送信は続く |
+
+```bash
+# 本体（$PADSB/TCP）と iPad 2台（AIS Type 9/UDP）へ同時出力
+ADSB_OUTPUTS="tcp://host.docker.internal:10111,udp://192.168.1.30:10110/ais9,udp://192.168.1.31:10110/ais9" \
+  docker compose up -d --build --wait
+```
+
+iPadのアドレスはLANのIPです（iPad版の受信設定、初期値UDP 10110／TCP 10111）。eNMEA2000の `Loop-Back.sh` から起動する場合も、同じ `ADSB_OUTPUTS` がそのまま効きます。
 
 ## 8. ローカルLLM（Ollama）による開発補助
 
@@ -222,6 +241,7 @@ python -m adsb.ollama_assist "TC5-8の地上位置デコードを追加して" -
 
 - `tests/test_adsb.py`：公開資料の既知フレーム（KLM1023、52.2572N/3.91937E、159kt/182.88°/−832fpm）、CRC誤り検出、世界4地点のCPR往復、PPM変復調（雑音・20kHzずれ）、シミュレータ→受信→Type 9（pyais復号）、TCP転送、Ollama API呼出し（模擬サーバ）。
 - `$PADSB` の書式・チェックサム、受信部から`$PADSB`／Type 9 のTCP転送。
+- 複数出力：出力先指定の解釈と不正値の拒否、TCP（`$PADSB`）とUDP（Type 9）への同時送信、接続できない宛先があっても他の宛先へ届くこと。
 - `tests/test_sdr.py`：逐次復調が一括復調と一致すること（区切り位置3通り）、送信模擬部→rtl_tcp→受信の全フレーム到達、未接続時の破棄、rtl_tcp以外のサーバの拒否。
 - Docker Compose（シミュレータ→SDR送信模擬部→受信部→ホストのTCP 10111）で `$PADSB` が届くこと（GitHub Actionsの `docker` ジョブ）。
 - eNMEA2000本体と連接し、地図に航空機と「呼出符号 FL高度」、航跡詳細が表示されること（eNMEA2000側のブラウザ試験）。

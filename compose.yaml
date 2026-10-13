@@ -51,7 +51,7 @@ services:
     #   --rtltcp host.docker.internal:1234 (real RTL-SDR via rtl_tcp on the host),
     #   --avr-tcp host:30002 (dump1090/readsb raw output)
     command: ["python", "-m", "adsb.receiver", "${ADSB_INPUT:---rtltcp}", "${ADSB_SOURCE:-sdr-tx:1236}",
-              "--forward", "${ENMEA_TARGET:-host.docker.internal:10111}", "--format", "${ADSB_FORMAT:-padsb}", "--quiet"]
+              "--output", "${ADSB_OUTPUTS:-tcp://${ENMEA_TARGET:-host.docker.internal:10111}}", "--format", "${ADSB_FORMAT:-padsb}", "--quiet"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

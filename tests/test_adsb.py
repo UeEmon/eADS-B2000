@@ -142,3 +142,40 @@ def test_ollama_assist_request(tmp_path):
     assert ollama_assist.chat('review', 'gpt-oss:20b', [str(src)], host) == 'ok'
     assert seen['path'] == '/api/chat' and seen['body']['model'] == 'gpt-oss:20b'
     assert 'print(1)' in seen['body']['messages'][1]['content'] and seen['body']['stream'] is False
+
+
+def test_parse_outputs():
+    outs = receiver.parse_outputs('tcp://enmea:10111, udp://192.168.1.30:10110/ais9,ipad.local:10111', 'padsb')
+    assert [repr(o) for o in outs] == ['tcp://enmea:10111/padsb', 'udp://192.168.1.30:10110/ais9',
+                                       'tcp://ipad.local:10111/padsb']
+    for bad in ('ftp://h:1', 'tcp://h:1/nmea', 'tcp://h', 'udp://:10110', 'tcp://h:0'):
+        with pytest.raises(ValueError):
+            receiver.parse_outputs(bad)
+
+
+def test_receiver_sends_to_several_outputs():
+    """eNMEA2000 gets $PADSB over TCP, an iPad gets AIS Type 9 over UDP, a dead TCP target blocks neither."""
+    server = socket.create_server(('127.0.0.1', 0))
+    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp.bind(('127.0.0.1', 0))
+    udp.settimeout(5)
+    dead = socket.create_server(('127.0.0.1', 0))
+    dead_port = dead.getsockname()[1]
+    dead.close()
+    got = []
+    def accept():
+        conn, _ = server.accept()
+        got.append(conn.makefile().readline())
+    t = threading.Thread(target=accept, daemon=True)
+    t.start()
+    rx = receiver.Receiver(outputs=receiver.parse_outputs(
+        f'tcp://127.0.0.1:{dead_port},tcp://127.0.0.1:{server.getsockname()[1]},'
+        f'udp://127.0.0.1:{udp.getsockname()[1]}/ais9'))
+    icao = 0x840123
+    for f in (modes.encode_position(icao, 35.0, 139.0, 5000, False),
+              modes.encode_position(icao, 35.0, 139.0, 5000, True)):
+        rx.handle(f)
+    t.join(5)
+    assert got and got[0].startswith('$PADSB,840123,')
+    assert udp.recv(1024).startswith(b'!AIVDM,1,1,,A,')
+    assert rx.outputs[0].stats['failures'] == 1 and rx.outputs[1].stats['sent'] == 1
