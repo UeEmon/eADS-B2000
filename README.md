@@ -16,9 +16,11 @@ python -m pytest -q
 python -m adsb.simulator --count 20 --tcp 30002 &
 python -m adsb.receiver --avr-tcp localhost:30002
 
-# eNMEA2000本体（TCP 10111）の地図へ航空機を表示（AIS Type 9ブリッジ、試験用）
+# eNMEA2000本体（TCP 10111）の地図へ航空機を表示（$PADSB）
 python -m adsb.receiver --avr-tcp localhost:30002 --forward localhost:10111 --quiet
 ```
+
+Dockerの場合は、eNMEA2000本体を起動してから `docker compose up -d --build --wait` を実行します。eNMEA2000の `bash Loop-Back.sh` は、同じ階層にある本リポジトリも起動します。設定は設計書の7.1節を参照してください。
 
 ## 構成
 
@@ -26,7 +28,7 @@ python -m adsb.receiver --avr-tcp localhost:30002 --forward localhost:10111 --qu
 |---|---|
 | `adsb/modes.py` | CRC-24、DF17/18の解析・生成、CPR符号化／復号 |
 | `adsb/tracker.py` | ICAO単位の航空機状態 |
-| `adsb/mapping.py` | eNMEA2000イベント行、AIS Type 9ブリッジ |
+| `adsb/mapping.py` | `$PADSB`、eNMEA2000イベント行、AIS Type 9ブリッジ |
 | `adsb/simulator.py` | 航空機トラフィック生成（AVR/TCP 30002、CU8 I/Q） |
 | `adsb/ppm.py` | 1090 MHz PPM 変調・最小復調（2 Msps） |
 | `adsb/receiver.py` | AVR/I/Q入力 → JSON行・eNMEA2000本体へ転送 |
