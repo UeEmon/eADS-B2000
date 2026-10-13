@@ -6,6 +6,10 @@
     python -m adsb.receiver --avr-tcp localhost:30002 --forward localhost:10111 --format ais9
     # from an I/Q recording made by adsb.simulator --iq or rtl_sdr -s 2000000 -f 1090e6
     python -m adsb.receiver --iq traffic.cu8
+    # live I/Q from adsb.sdrtx (software) or a real `rtl_tcp -s 2000000`
+    python -m adsb.receiver --rtltcp localhost:1236 --forward localhost:10111
+    # USB RTL-SDR on this machine (needs the rtl_sdr tool)
+    python -m adsb.receiver --rtlsdr 0 --forward localhost:10111
 """
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ import json
 import socket
 import sys
 import time
-from . import mapping, modes, ppm
+from . import mapping, modes, ppm, rtltcp
 from .tracker import Tracker
 
 
@@ -85,6 +89,12 @@ def avr_tcp(address, retry=5.0):
         time.sleep(retry)
 
 
+def demodulated(blocks):
+    demod = ppm.StreamDemodulator()
+    for block in blocks:
+        yield from demod.feed(block)
+
+
 def _hostport(value):
     host, port = value.rsplit(':', 1)
     return host, int(port)
@@ -96,6 +106,8 @@ def main(argv=None):
     src.add_argument('--avr-tcp', type=_hostport, help='host:port of AVR raw feed (30002)')
     src.add_argument('--avr-file', help='file with *...; lines ("-" for stdin)')
     src.add_argument('--iq', help='CU8 I/Q file at 2 Msps')
+    src.add_argument('--rtltcp', type=_hostport, help='host:port of rtl_tcp I/Q (adsb.sdrtx 1236 or rtl_tcp)')
+    src.add_argument('--rtlsdr', metavar='DEVICE', help='USB RTL-SDR index or serial (rtl_sdr tool)')
     p.add_argument('--forward', type=_hostport, help='send aircraft to eNMEA2000 TCP (10111)')
     p.add_argument('--format', choices=('padsb', 'ais9'), default='padsb',
                    help='forwarded sentence: $PADSB (native) or AIS Type 9 (legacy bridge)')
@@ -106,6 +118,10 @@ def main(argv=None):
     if args.iq:
         with open(args.iq, 'rb') as f:
             frames = ppm.demodulate(f.read())
+    elif args.rtltcp:
+        frames = demodulated(rtltcp.stream(args.rtltcp, ppm.RATE))
+    elif args.rtlsdr is not None:
+        frames = demodulated(rtltcp.usb(args.rtlsdr, ppm.RATE))
     elif args.avr_file:
         frames = frames_from_avr(sys.stdin if args.avr_file == '-' else open(args.avr_file))
     else:

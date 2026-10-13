@@ -39,22 +39,55 @@ def cu8(iq: np.ndarray, noise=0.0, rng=None) -> bytes:
     return np.clip(np.rint(out * 127 + 127.5), 0, 255).astype(np.uint8).tobytes()
 
 
+FRAME = 16 + 224        # preamble + 112 bits, in samples
+HIGH, LOW = (0, 2, 7, 9), (1, 3, 4, 5, 6, 8)
+
+
+def scan(mag: np.ndarray, limit: int | None = None, threshold: float = 10.0):
+    """Find CRC-valid DF17/18 frames whose preamble starts before ``limit``.
+
+    Returns (frames, next_start): the caller keeps samples from next_start on
+    for the following block, so streamed input is neither missed nor doubled.
+    """
+    n = min(len(mag) - FRAME, len(mag) if limit is None else limit)
+    if n <= 0:
+        return [], 0
+    hi = np.minimum.reduce([mag[k:k + n] for k in HIGH])
+    lo = np.maximum.reduce([mag[k:k + n] for k in LOW])
+    found, skip = [], 0
+    for i in np.flatnonzero((hi > threshold) & (hi > 2 * lo)):
+        if i < skip:
+            continue
+        d = mag[i + 16:i + FRAME]
+        frame = np.packbits(d[::2] > d[1::2]).tobytes()
+        if frame[0] >> 3 in (17, 18) and not modes.crc24(frame):
+            found.append(frame.hex().upper())
+            skip = i + FRAME
+    return found, max(n, skip)
+
+
+def magnitude(raw: bytes) -> np.ndarray:
+    iq = np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 127.5
+    return np.hypot(iq[::2], iq[1::2])
+
+
 def demodulate(raw: bytes) -> list[str]:
     """Return CRC-valid 112-bit DF17/18 frames found in CU8 I/Q."""
-    iq = np.frombuffer(raw, dtype=np.uint8).astype(float) - 127.5
-    mag = np.hypot(iq[::2], iq[1::2])
-    found, i, n = [], 0, len(mag) - 16 - 224
-    high, low = (0, 2, 7, 9), (1, 3, 4, 5, 6, 8)
-    while i < n:
-        w = mag[i:i + 16]
-        hi = min(w[k] for k in high)
-        if hi > 10 and hi > 2 * max(w[k] for k in low):
-            d = mag[i + 16:i + 16 + 224]
-            bits = (d[::2] > d[1::2]).astype(np.uint8)
-            frame = np.packbits(bits).tobytes()
-            if frame[0] >> 3 in (17, 18) and not modes.crc24(frame):
-                found.append(frame.hex().upper())
-                i += 16 + 224
-                continue
-        i += 1
-    return found
+    return scan(magnitude(raw))[0]
+
+
+class StreamDemodulator:
+    """Incremental demodulator for a live CU8 stream (rtl_tcp)."""
+    def __init__(self, threshold: float = 10.0):
+        self.tail = np.zeros(0, dtype=np.float32)
+        self.odd = b''           # a recv() can split an I/Q byte pair
+        self.threshold = threshold
+
+    def feed(self, raw: bytes) -> list[str]:
+        raw = self.odd + raw
+        even = len(raw) // 2 * 2
+        self.odd = raw[even:]
+        mag = np.concatenate((self.tail, magnitude(raw[:even])))
+        frames, keep = scan(mag, len(mag) - FRAME, self.threshold)
+        self.tail = mag[keep:]
+        return frames

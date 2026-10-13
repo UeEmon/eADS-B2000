@@ -20,7 +20,9 @@ python -m adsb.receiver --avr-tcp localhost:30002
 python -m adsb.receiver --avr-tcp localhost:30002 --forward localhost:10111 --quiet
 ```
 
-Dockerの場合は、eNMEA2000本体を起動してから `docker compose up -d --build --wait` を実行します。eNMEA2000の `bash Loop-Back.sh` は、同じ階層にある本リポジトリも起動します。設定は設計書の7.1節を参照してください。
+Dockerの場合は、eNMEA2000本体を起動してから `docker compose up -d --build --wait` を実行します。シミュレータ → SDR送信模擬部（rtl_tcp 1236）→ 受信部 → 本体（TCP 10111）の順につながります。eNMEA2000の `bash Loop-Back.sh` は、同じ階層にある本リポジトリも起動します。設定は設計書の7.1節を参照してください。
+
+実機RTL-SDRは、Macなら端末で `rtl_tcp -a 0.0.0.0 -p 1234 -s 2000000 -f 1090000000` を動かし、`ADSB_SOURCE=host.docker.internal:1234 docker compose up -d --build --no-deps receiver` で切り替えます。Linuxは `compose.usb.yaml` でUSBを直結できます（設計書7.2節）。AISと同時に受けるにはドングルが2本必要です。
 
 ## 構成
 
@@ -31,7 +33,9 @@ Dockerの場合は、eNMEA2000本体を起動してから `docker compose up -d 
 | `adsb/mapping.py` | `$PADSB`、eNMEA2000イベント行、AIS Type 9ブリッジ |
 | `adsb/simulator.py` | 航空機トラフィック生成（AVR/TCP 30002、CU8 I/Q） |
 | `adsb/ppm.py` | 1090 MHz PPM 変調・最小復調（2 Msps） |
-| `adsb/receiver.py` | AVR/I/Q入力 → JSON行・eNMEA2000本体へ転送 |
+| `adsb/sdrtx.py` | SDR送信模擬部（AVR → PPM I/Q → rtl_tcp 1236） |
+| `adsb/rtltcp.py` | rtl_tcpクライアント、USB RTL-SDR（`rtl_sdr`）入力 |
+| `adsb/receiver.py` | AVR/I/Q/rtl_tcp/RTL-SDR入力 → JSON行・eNMEA2000本体へ転送 |
 | `adsb/ollama_assist.py` | ローカルOllamaによるコーディング補助 |
 
 ```bash
