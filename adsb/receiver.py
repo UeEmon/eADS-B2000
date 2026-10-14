@@ -10,6 +10,9 @@
     python -m adsb.receiver --rtltcp localhost:1236 --forward localhost:10111
     # USB RTL-SDR on this machine (needs the rtl_sdr tool)
     python -m adsb.receiver --rtlsdr 0 --forward localhost:10111
+    # several destinations at once: eNMEA2000 ($PADSB over TCP) and an iPad (AIS Type 9 over UDP)
+    python -m adsb.receiver --rtltcp localhost:1236 \
+        --output tcp://localhost:10111,udp://192.168.1.30:10110/ais9
 """
 from __future__ import annotations
 
@@ -30,11 +33,66 @@ def frames_from_avr(lines):
             yield body[12:] if line[0] == '@' else body   # @ = 48-bit timestamp prefix
 
 
+ENCODERS = {'padsb': mapping.padsb, 'ais9': mapping.ais_type9}
+
+
+class Output:
+    """One destination: TCP (reconnects after a failure) or UDP datagrams, each with its own format."""
+
+    def __init__(self, protocol, address, fmt='padsb', retry=5.0):
+        if protocol not in ('tcp', 'udp') or fmt not in ENCODERS:
+            raise ValueError(f'unsupported output {protocol}/{fmt}')
+        self.protocol, self.address, self.fmt, self.retry = protocol, address, fmt, retry
+        self.sock, self.next_try = None, 0.0
+        self.stats = {'sent': 0, 'failures': 0}
+
+    def __repr__(self):
+        return f'{self.protocol}://{self.address[0]}:{self.address[1]}/{self.fmt}'
+
+    def send(self, sentence):
+        now = time.monotonic()
+        if self.sock is None and now < self.next_try:
+            return
+        data = (sentence + '\r\n').encode()
+        try:
+            if self.protocol == 'udp':
+                if self.sock is None:
+                    self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.sock.sendto(data, self.address)
+            else:
+                if self.sock is None:
+                    self.sock = socket.create_connection(self.address, timeout=5)
+                self.sock.sendall(data)
+            self.stats['sent'] += 1
+        except OSError as exc:
+            print(f'output {self} failed: {exc}', file=sys.stderr)
+            self.stats['failures'] += 1
+            self.close()
+            self.next_try = now + self.retry
+
+    def close(self):
+        if self.sock:
+            self.sock.close()
+        self.sock = None
+
+
+def parse_outputs(value, fmt='padsb'):
+    """'tcp://host:port[/fmt],udp://host:port[/fmt]'; a bare host:port is TCP."""
+    outputs = []
+    for item in filter(None, (v.strip() for v in value.split(','))):
+        protocol, sep, rest = item.partition('://')
+        if not sep:
+            protocol, rest = 'tcp', item
+        address, _, item_fmt = rest.partition('/')
+        outputs.append(Output(protocol.lower(), _hostport(address), item_fmt or fmt))
+    return outputs
+
+
 class Receiver:
-    def __init__(self, source='adsb', forward=None, ref=None, bridge_interval=1.0, fmt='padsb'):
+    def __init__(self, source='adsb', forward=None, ref=None, bridge_interval=1.0, fmt='padsb', outputs=()):
         self.tracker, self.source = Tracker(ref=ref), source
-        self.encode = {'padsb': mapping.padsb, 'ais9': mapping.ais_type9}[fmt]
-        self.forward, self.sock, self.sent = forward, None, {}
+        self.outputs = list(outputs) + ([Output('tcp', forward, fmt)] if forward else [])
+        self.sent = {}
         self.bridge_interval = bridge_interval
         self.stats = {'frames': 0, 'decoded': 0, 'errors': 0}
 
@@ -54,27 +112,18 @@ class Receiver:
         return row
 
     def _bridge(self, ac):
-        if not self.forward:
+        if not self.outputs or ac.get('lat') is None:
             return
         now = time.monotonic()
         if now - self.sent.get(ac['icao'], 0) < self.bridge_interval:
             return
-        if ac.get('lat') is None:
-            return
-        sentence = self.encode(ac)
-        if not sentence:
-            return
-        try:
-            if self.sock is None:
-                self.sock = socket.create_connection(self.forward, timeout=5)
-            self.sock.sendall((sentence + '\r\n').encode())
-            self.sent[ac['icao']] = now
-        except OSError as exc:
-            print(f'forward failed: {exc}', file=sys.stderr)
-            if self.sock:
-                self.sock.close()
-            self.sock = None
-            self.sent[ac['icao']] = now   # back off one interval before reconnecting
+        self.sent[ac['icao']] = now
+        sentences = {}
+        for out in self.outputs:
+            if out.fmt not in sentences:
+                sentences[out.fmt] = ENCODERS[out.fmt](ac)
+            if sentences[out.fmt]:
+                out.send(sentences[out.fmt])
 
 
 def avr_tcp(address, retry=5.0):
@@ -97,6 +146,8 @@ def demodulated(blocks):
 
 def _hostport(value):
     host, port = value.rsplit(':', 1)
+    if not host or not 0 < int(port) < 65536:
+        raise ValueError(f'bad host:port {value!r}')
     return host, int(port)
 
 
@@ -109,12 +160,21 @@ def main(argv=None):
     src.add_argument('--rtltcp', type=_hostport, help='host:port of rtl_tcp I/Q (adsb.sdrtx 1236 or rtl_tcp)')
     src.add_argument('--rtlsdr', metavar='DEVICE', help='USB RTL-SDR index or serial (rtl_sdr tool)')
     p.add_argument('--forward', type=_hostport, help='send aircraft to eNMEA2000 TCP (10111)')
-    p.add_argument('--format', choices=('padsb', 'ais9'), default='padsb',
-                   help='forwarded sentence: $PADSB (native) or AIS Type 9 (legacy bridge)')
+    p.add_argument('--output', action='append', default=[], metavar='LIST',
+                   help='comma-separated tcp://host:port[/fmt] or udp://host:port[/fmt]; repeatable '
+                        '(e.g. eNMEA2000 and iPads at once)')
+    p.add_argument('--format', choices=tuple(ENCODERS), default='padsb',
+                   help='default sentence: $PADSB (native) or AIS Type 9 (iPad app, older eNMEA2000)')
     p.add_argument('--ref', type=lambda v: tuple(map(float, v.split(','))), help='receiver lat,lon')
     p.add_argument('--quiet', action='store_true', help='no JSON rows on stdout')
     args = p.parse_args(argv)
-    rx = Receiver(forward=args.forward, ref=args.ref, fmt=args.format)
+    try:
+        outputs = [o for value in args.output for o in parse_outputs(value, args.format)]
+    except ValueError as exc:
+        p.error(f'--output: {exc}')
+    rx = Receiver(forward=args.forward, ref=args.ref, fmt=args.format, outputs=outputs)
+    for out in rx.outputs:
+        print(f'output {out}', file=sys.stderr)
     if args.iq:
         with open(args.iq, 'rb') as f:
             frames = ppm.demodulate(f.read())
