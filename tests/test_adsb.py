@@ -2,7 +2,6 @@ import itertools
 import socket
 import threading
 import pytest
-from pyais import decode as decode_ais
 from adsb import mapping, modes, ppm, receiver, simulator
 from adsb.tracker import Tracker
 
@@ -57,7 +56,7 @@ def test_ppm_round_trip_with_noise():
     assert ppm.demodulate(raw) == frames
 
 
-def test_simulator_to_tracker_and_ais_bridge():
+def test_simulator_to_tracker():
     planes = simulator.fleet(3, (35.5494, 139.7798), 40, seed=7)
     rx = receiver.Receiver()
     for _ in range(4):
@@ -71,16 +70,10 @@ def test_simulator_to_tracker_and_ais_bridge():
         state = rx.tracker.aircraft[f'{ac.icao:06X}']
         assert state['callsign'] == ac.callsign
         assert (state['lat'], state['lon']) == pytest.approx((ac.lat, ac.lon), abs=0.01)
-        sentence = mapping.ais_type9(state, second=12)
-        msg = decode_ais(sentence).asdict()
-        assert msg['msg_type'] == 9 and msg['mmsi'] == mapping.pseudo_mmsi(state['icao'])
-        assert msg['lat'] == pytest.approx(state['lat'], abs=1e-4)
-        assert msg['speed'] == round(state['ground_speed_kt'])
+        assert mapping.padsb(state).startswith(f'$PADSB,{ac.icao:06X},{ac.callsign},')
 
 
-@pytest.mark.parametrize('fmt,prefix', [('padsb', '$PADSB,840123,,35.0000'),
-                                        ('ais9', '!AIVDM,1,1,,A,')])
-def test_receiver_forwards_to_enmea_tcp(fmt, prefix):
+def test_receiver_forwards_to_enmea_tcp():
     server = socket.create_server(('127.0.0.1', 0))
     got = []
     def accept():
@@ -88,13 +81,13 @@ def test_receiver_forwards_to_enmea_tcp(fmt, prefix):
         got.append(conn.makefile().readline())
     t = threading.Thread(target=accept, daemon=True)
     t.start()
-    rx = receiver.Receiver(forward=server.getsockname(), fmt=fmt)
+    rx = receiver.Receiver(forward=server.getsockname())
     icao = 0x840123
     for f in (modes.encode_position(icao, 35.0, 139.0, 5000, False),
               modes.encode_position(icao, 35.0, 139.0, 5000, True)):
         rx.handle(f)
     t.join(5)
-    assert got and got[0].startswith(prefix)
+    assert got and got[0].startswith('$PADSB,840123,,35.0000')
 
 
 def test_padsb_sentence():
@@ -145,16 +138,15 @@ def test_ollama_assist_request(tmp_path):
 
 
 def test_parse_outputs():
-    outs = receiver.parse_outputs('tcp://enmea:10111, udp://192.168.1.30:10110/ais9,ipad.local:10111', 'padsb')
-    assert [repr(o) for o in outs] == ['tcp://enmea:10111/padsb', 'udp://192.168.1.30:10110/ais9',
-                                       'tcp://ipad.local:10111/padsb']
-    for bad in ('ftp://h:1', 'tcp://h:1/nmea', 'tcp://h', 'udp://:10110', 'tcp://h:0'):
+    outs = receiver.parse_outputs('tcp://enmea:10111, udp://192.168.1.30:10110,ipad.local:10111')
+    assert [repr(o) for o in outs] == ['tcp://enmea:10111', 'udp://192.168.1.30:10110', 'tcp://ipad.local:10111']
+    for bad in ('ftp://h:1', 'udp://h:10110/ais9', 'tcp://h', 'udp://:10110', 'tcp://h:0'):
         with pytest.raises(ValueError):
             receiver.parse_outputs(bad)
 
 
 def test_receiver_sends_to_several_outputs():
-    """eNMEA2000 gets $PADSB over TCP, an iPad gets AIS Type 9 over UDP, a dead TCP target blocks neither."""
+    """eNMEA2000 over TCP and an iPad over UDP both get $PADSB; a dead TCP target blocks neither."""
     server = socket.create_server(('127.0.0.1', 0))
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp.bind(('127.0.0.1', 0))
@@ -170,12 +162,12 @@ def test_receiver_sends_to_several_outputs():
     t.start()
     rx = receiver.Receiver(outputs=receiver.parse_outputs(
         f'tcp://127.0.0.1:{dead_port},tcp://127.0.0.1:{server.getsockname()[1]},'
-        f'udp://127.0.0.1:{udp.getsockname()[1]}/ais9'))
+        f'udp://127.0.0.1:{udp.getsockname()[1]}'))
     icao = 0x840123
     for f in (modes.encode_position(icao, 35.0, 139.0, 5000, False),
               modes.encode_position(icao, 35.0, 139.0, 5000, True)):
         rx.handle(f)
     t.join(5)
     assert got and got[0].startswith('$PADSB,840123,')
-    assert udp.recv(1024).startswith(b'!AIVDM,1,1,,A,')
+    assert udp.recv(1024).startswith(b'$PADSB,840123,')
     assert rx.outputs[0].stats['failures'] == 1 and rx.outputs[1].stats['sent'] == 1

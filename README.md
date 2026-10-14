@@ -24,7 +24,7 @@ Dockerの場合は、eNMEA2000本体を起動してから `docker compose up -d 
 
 実機RTL-SDRは、Macなら端末で `rtl_tcp -a 0.0.0.0 -p 1234 -s 2000000 -f 1090000000` を動かし、`ADSB_SOURCE=host.docker.internal:1234 docker compose up -d --build --no-deps receiver` で切り替えます。Linuxは `compose.usb.yaml` でUSBを直結できます（設計書7.2節）。AISと同時に受けるにはドングルが2本必要です。
 
-出力先は複数指定できます。例：`ADSB_OUTPUTS="tcp://host.docker.internal:10111,udp://192.168.1.30:10110/ais9"` で、本体（`$PADSB`）とiPad（AIS Type 9）へ同時に送ります（設計書7.3節）。
+出力先は複数指定できます。例：`ADSB_OUTPUTS="tcp://host.docker.internal:10111,udp://192.168.1.30:10110"` で、本体とiPadへ同時に `$PADSB` を送ります（設計書7.3節）。ADS-BはAISとは別に扱い、AIS Type 9には変換しません。
 
 ## 構成
 
@@ -32,7 +32,7 @@ Dockerの場合は、eNMEA2000本体を起動してから `docker compose up -d 
 |---|---|
 | `adsb/modes.py` | CRC-24、DF17/18の解析・生成、CPR符号化／復号 |
 | `adsb/tracker.py` | ICAO単位の航空機状態 |
-| `adsb/mapping.py` | `$PADSB`、eNMEA2000イベント行、AIS Type 9ブリッジ |
+| `adsb/mapping.py` | `$PADSB`、eNMEA2000イベント行 |
 | `adsb/simulator.py` | 航空機トラフィック生成（AVR/TCP 30002、CU8 I/Q） |
 | `adsb/ppm.py` | 1090 MHz PPM 変調・最小復調（2 Msps） |
 | `adsb/sdrtx.py` | SDR送信模擬部（AVR → PPM I/Q → rtl_tcp 1236） |

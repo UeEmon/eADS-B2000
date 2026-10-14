@@ -1,3 +1,2 @@
 -r requirements.txt
 pytest
-pyais==3.2.3

@@ -6,7 +6,7 @@ services:
   receiver:
     user: "0:0"
     command: ["python", "-m", "adsb.receiver", "--rtlsdr", "${ADSB_USB_DEVICE:-0}",
-              "--output", "${ADSB_OUTPUTS:-tcp://${ENMEA_TARGET:-host.docker.internal:10111}}", "--format", "${ADSB_FORMAT:-padsb}", "--quiet"]
+              "--output", "${ADSB_OUTPUTS:-tcp://${ENMEA_TARGET:-host.docker.internal:10111}}", "--quiet"]
     device_cgroup_rules:
       - "c 189:* rmw"
     volumes:

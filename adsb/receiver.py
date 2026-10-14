@@ -1,18 +1,16 @@
-"""ADS-B receiver: AVR text or CU8 I/Q in, aircraft rows / AIS bridge out.
+"""ADS-B receiver: AVR text or CU8 I/Q in, aircraft rows / $PADSB out (never converted to AIS).
 
     # from dump1090/readsb raw output (or adsb.simulator --tcp 30002)
     python -m adsb.receiver --avr-tcp localhost:30002 --forward localhost:10111
-    # older eNMEA2000 without $PADSB support: send AIS Type 9 instead
-    python -m adsb.receiver --avr-tcp localhost:30002 --forward localhost:10111 --format ais9
     # from an I/Q recording made by adsb.simulator --iq or rtl_sdr -s 2000000 -f 1090e6
     python -m adsb.receiver --iq traffic.cu8
     # live I/Q from adsb.sdrtx (software) or a real `rtl_tcp -s 2000000`
     python -m adsb.receiver --rtltcp localhost:1236 --forward localhost:10111
     # USB RTL-SDR on this machine (needs the rtl_sdr tool)
     python -m adsb.receiver --rtlsdr 0 --forward localhost:10111
-    # several destinations at once: eNMEA2000 ($PADSB over TCP) and an iPad (AIS Type 9 over UDP)
+    # several destinations at once: eNMEA2000 (TCP) and an iPad (UDP), both $PADSB
     python -m adsb.receiver --rtltcp localhost:1236 \
-        --output tcp://localhost:10111,udp://192.168.1.30:10110/ais9
+        --output tcp://localhost:10111,udp://192.168.1.30:10110
 """
 from __future__ import annotations
 
@@ -33,21 +31,18 @@ def frames_from_avr(lines):
             yield body[12:] if line[0] == '@' else body   # @ = 48-bit timestamp prefix
 
 
-ENCODERS = {'padsb': mapping.padsb, 'ais9': mapping.ais_type9}
-
-
 class Output:
-    """One destination: TCP (reconnects after a failure) or UDP datagrams, each with its own format."""
+    """One $PADSB destination: TCP (reconnects after a failure) or UDP datagrams."""
 
-    def __init__(self, protocol, address, fmt='padsb', retry=5.0):
-        if protocol not in ('tcp', 'udp') or fmt not in ENCODERS:
-            raise ValueError(f'unsupported output {protocol}/{fmt}')
-        self.protocol, self.address, self.fmt, self.retry = protocol, address, fmt, retry
+    def __init__(self, protocol, address, retry=5.0):
+        if protocol not in ('tcp', 'udp'):
+            raise ValueError(f'unsupported output protocol {protocol}')
+        self.protocol, self.address, self.retry = protocol, address, retry
         self.sock, self.next_try = None, 0.0
         self.stats = {'sent': 0, 'failures': 0}
 
     def __repr__(self):
-        return f'{self.protocol}://{self.address[0]}:{self.address[1]}/{self.fmt}'
+        return f'{self.protocol}://{self.address[0]}:{self.address[1]}'
 
     def send(self, sentence):
         now = time.monotonic()
@@ -76,22 +71,21 @@ class Output:
         self.sock = None
 
 
-def parse_outputs(value, fmt='padsb'):
-    """'tcp://host:port[/fmt],udp://host:port[/fmt]'; a bare host:port is TCP."""
+def parse_outputs(value):
+    """'tcp://host:port,udp://host:port'; a bare host:port is TCP."""
     outputs = []
     for item in filter(None, (v.strip() for v in value.split(','))):
         protocol, sep, rest = item.partition('://')
         if not sep:
             protocol, rest = 'tcp', item
-        address, _, item_fmt = rest.partition('/')
-        outputs.append(Output(protocol.lower(), _hostport(address), item_fmt or fmt))
+        outputs.append(Output(protocol.lower(), _hostport(rest)))
     return outputs
 
 
 class Receiver:
-    def __init__(self, source='adsb', forward=None, ref=None, bridge_interval=1.0, fmt='padsb', outputs=()):
+    def __init__(self, source='adsb', forward=None, ref=None, bridge_interval=1.0, outputs=()):
         self.tracker, self.source = Tracker(ref=ref), source
-        self.outputs = list(outputs) + ([Output('tcp', forward, fmt)] if forward else [])
+        self.outputs = list(outputs) + ([Output('tcp', forward)] if forward else [])
         self.sent = {}
         self.bridge_interval = bridge_interval
         self.stats = {'frames': 0, 'decoded': 0, 'errors': 0}
@@ -118,12 +112,9 @@ class Receiver:
         if now - self.sent.get(ac['icao'], 0) < self.bridge_interval:
             return
         self.sent[ac['icao']] = now
-        sentences = {}
+        sentence = mapping.padsb(ac)
         for out in self.outputs:
-            if out.fmt not in sentences:
-                sentences[out.fmt] = ENCODERS[out.fmt](ac)
-            if sentences[out.fmt]:
-                out.send(sentences[out.fmt])
+            out.send(sentence)
 
 
 def avr_tcp(address, retry=5.0):
@@ -161,18 +152,16 @@ def main(argv=None):
     src.add_argument('--rtlsdr', metavar='DEVICE', help='USB RTL-SDR index or serial (rtl_sdr tool)')
     p.add_argument('--forward', type=_hostport, help='send aircraft to eNMEA2000 TCP (10111)')
     p.add_argument('--output', action='append', default=[], metavar='LIST',
-                   help='comma-separated tcp://host:port[/fmt] or udp://host:port[/fmt]; repeatable '
-                        '(e.g. eNMEA2000 and iPads at once)')
-    p.add_argument('--format', choices=tuple(ENCODERS), default='padsb',
-                   help='default sentence: $PADSB (native) or AIS Type 9 (iPad app, older eNMEA2000)')
+                   help='comma-separated tcp://host:port or udp://host:port; repeatable '
+                        '(e.g. eNMEA2000 and iPads at once, all $PADSB)')
     p.add_argument('--ref', type=lambda v: tuple(map(float, v.split(','))), help='receiver lat,lon')
     p.add_argument('--quiet', action='store_true', help='no JSON rows on stdout')
     args = p.parse_args(argv)
     try:
-        outputs = [o for value in args.output for o in parse_outputs(value, args.format)]
+        outputs = [o for value in args.output for o in parse_outputs(value)]
     except ValueError as exc:
         p.error(f'--output: {exc}')
-    rx = Receiver(forward=args.forward, ref=args.ref, fmt=args.format, outputs=outputs)
+    rx = Receiver(forward=args.forward, ref=args.ref, outputs=outputs)
     for out in rx.outputs:
         print(f'output {out}', file=sys.stderr)
     if args.iq:
