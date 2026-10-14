@@ -28,16 +28,18 @@ AIS系の各構成に、ADS-B側の同じ役割の部品を置きます。
 
 ```mermaid
 flowchart TD
- S["ADS-Bシミュレータ<br/>adsb.simulator"] -->|AVR TCP 30002| R["ADS-B受信部<br/>adsb.receiver"]
- S -->|CU8 I/Q 2Msps| R
- D["dump1090 / readsb<br/>（実機RTL-SDR 1090MHz）"] -->|AVR TCP 30002| R
+ S["ADS-Bシミュレータ<br/>adsb.simulator"] -->|AVR TCP 30002| T["SDR送信模擬部<br/>adsb.sdrtx"]
+ T -->|rtl_tcp CU8 I/Q 2Msps<br/>TCP 1236（既定）| R["ADS-B受信部<br/>adsb.receiver"]
+ U["実機RTL-SDR<br/>rtl_tcp :1234 / USB直結"] -->|CU8 I/Q 2Msps| R
+ D["dump1090 / readsb"] -->|AVR TCP 30002| R
  R -->|JSON行（eNMEA2000イベント形式）| J["保存・解析"]
  R -->|$PADSB TCP 10111（既定）／AIS Type 9（旧版向け）| A["eNMEA2000本体"]
  A --> G["Cesium GIS / PostgreSQL / iPad"]
 ```
 
-- 実機受信は、実績のある dump1090／readsb に復調を任せ、その **AVR生フレーム出力（TCP 30002、`*8D...;`形式）** を受け取る構成を基本とします。AIS側でAIS-catcherに復調を任せたのと同じ考え方です。
-- `adsb/ppm.py` の復調器は試験・ループバック用の最小実装です。実電波の性能は dump1090／readsb が上です。
+- 既定の経路は eNMEA2000 のAIS系と同じ形です：シミュレータ → **SDR送信模擬部**（I/Qを rtl_tcp で配信）→ 受信部（復調）→ `$PADSB` → **eNMEA2000本体（TCP 10111）**。受信部の出力は常に本体へ入ります。
+- 受信部は rtl_tcp 互換であれば送信模擬部と実機の `rtl_tcp` を区別しません。入力元を切り替えるだけで実機RTL-SDRへ移れます（7.2節）。
+- `adsb/ppm.py` の復調器はベクトル化した最小実装で、2 Mspsを実時間の数十分の一で処理します。弱い電波の感度は dump1090／readsb が上なので、それらのAVR出力（TCP 30002）も受けられます。
 
 ## 4. 対応メッセージ（第1段階）
 
@@ -104,6 +106,13 @@ $PADSB,86D3A1,JAL123,35.549400,139.779800,12500,420.0,287.0,-1472,3*hh
 - 0.5秒ごとに位置（偶奇交互）と速度、5秒ごとに識別を送ります（実機の送信間隔に近い値）。
 - 出力：AVRテキスト（標準出力、またはdump1090互換のTCPサーバ）、またはCU8 I/Qファイル（雑音・周波数ずれ指定可）。
 
+### 6.1 SDR送信模擬部（`adsb.sdrtx`）
+
+- シミュレータのAVR出力（TCP 30002）を受け、各フレームをPPM変調して、10 msごとのCU8 I/Qブロックへ無作為な位置で重ねます。雑音・振幅・周波数ずれを指定できます。
+- I/Qは **rtl_tcp互換サーバ（TCP 1236）** で実時間に合わせて配信します（`RTL0`ヘッダ、周波数・サンプルレート・利得コマンドを受付）。受信部・dump1090 `--net-rtltcp` などの rtl_tcp クライアントがそのまま接続できます。
+- 同時接続は1クライアント。未接続中のフレームは捨て、2秒以上滞留したフレームも捨てます（eNMEA2000の送信模擬部と同じ方針）。
+- 2 Msps・1090 MHz以外を要求されたら警告します。
+
 **I/Qはソフトウェア試験専用です。1090 MHzでの電波発射は電波法上許されません。** eNMEA2000のSDR送信模擬部と同様、RF送信機・アンテナへは出力しません。
 
 ## 7. 使い方
@@ -124,8 +133,14 @@ python -m adsb.receiver --avr-tcp localhost:30002 --forward localhost:10111 --qu
 python -m adsb.simulator --count 8 --seconds 30 --iq traffic.cu8 --noise 0.03
 python -m adsb.receiver --iq traffic.cu8
 
-# 4) 実機：RTL-SDR + readsb/dump1090 の生出力を受信
-python -m adsb.receiver --avr-tcp <受信機のIP>:30002 --ref 35.55,139.78 --forward localhost:10111
+# 4) SDR送信模擬部（rtl_tcp 1236）経由で受信
+python -m adsb.sdrtx --avr-tcp localhost:30002 --rtltcp 1236 &
+python -m adsb.receiver --rtltcp localhost:1236 --forward localhost:10111
+
+# 5) 実機RTL-SDR（7.2節）
+python -m adsb.receiver --rtlsdr 0 --forward localhost:10111              # USB直結（rtl_sdr コマンドが必要）
+python -m adsb.receiver --rtltcp <rtl_tcpのIP>:1234 --forward localhost:10111
+python -m adsb.receiver --avr-tcp <readsbのIP>:30002 --ref 35.55,139.78 --forward localhost:10111
 ```
 
 ### 7.1 Docker Compose
@@ -133,21 +148,42 @@ python -m adsb.receiver --avr-tcp <受信機のIP>:30002 --ref 35.55,139.78 --fo
 ```bash
 # 先にeNMEA2000本体を起動（TCP 10111）。その後:
 docker compose up -d --build --wait
-# 受信元を実機のdump1090/readsbにする場合（シミュレータは不要）
-ADSB_SOURCE=192.168.1.50:30002 docker compose up -d --build --no-deps receiver
+# 既定：simulator → sdr-tx（rtl_tcp 1236）→ receiver → 本体 TCP 10111
 ```
 
 | 変数 | 既定値 | 内容 |
 |---|---|---|
 | `ADSB_COUNT` / `ADSB_LAT` / `ADSB_LON` / `ADSB_RADIUS_NM` | 20 / 35.5494 / 139.7798 / 60 | シミュレータの機数・中心・半径 |
 | `ADSB_BIND` | 127.0.0.1 | シミュレータのAVR出力（30002）の公開先 |
-| `ADSB_SOURCE` | simulator:30002 | 受信部の入力（AVR生フレーム） |
+| `ADSB_TX_AMPLITUDE` / `ADSB_TX_NOISE` | 0.6 / 0.02 | SDR送信模擬部の振幅・雑音 |
+| `ADSB_INPUT` | `--rtltcp` | 受信部の入力種別（`--rtltcp` または `--avr-tcp`） |
+| `ADSB_SOURCE` | sdr-tx:1236 | 受信部の入力元 `host:port` |
+| `ADSB_USB_DEVICE` | 0 | USB直結時のRTL-SDR番号（`compose.usb.yaml`） |
 | `ENMEA_TARGET` | host.docker.internal:10111 | 転送先（eNMEA2000本体のTCP） |
 | `ADSB_FORMAT` | padsb | `padsb` または `ais9` |
 
 eNMEA2000の `bash Loop-Back.sh` は、eNMEA2000と同じ階層に本リポジトリ（`eADS-B2000`）がある場合、または `ADSB_DIR` を指定した場合に、このComposeも起動します。
 
 受信部は入力元が切断されると5秒ごとに再接続し、転送先へは送信失敗のたびに接続し直します。
+
+### 7.2 実機RTL-SDR
+
+1090 MHz用のアンテナとRTL-SDRドングルを使います。**AIS（162 MHz）とADS-B（1090 MHz）を同時に受けるにはドングルが2本必要です**（1本で両方は受けられません）。2本目は `-d 1` などで指定します。
+
+```bash
+# Mac（Docker DesktopはUSBを渡せないため、端末で rtl_tcp を動かす）
+brew install librtlsdr
+rtl_tcp -a 0.0.0.0 -p 1234 -s 2000000 -f 1090000000 -d 0
+ADSB_SOURCE=host.docker.internal:1234 docker compose up -d --build --no-deps receiver
+
+# Linux（USBをコンテナへ直結）
+docker compose -f compose.yaml -f compose.usb.yaml up -d --build --no-deps receiver
+
+# dump1090/readsb を使う場合（AVR生出力）
+ADSB_INPUT=--avr-tcp ADSB_SOURCE=192.168.1.50:30002 docker compose up -d --build --no-deps receiver
+```
+
+いずれも出力は `$PADSB` として eNMEA2000本体（TCP 10111）へ入ります。eNMEA2000の `Loop-Back.sh` からは `ADSB_RTL_TCP=host.docker.internal:1234` で同じ切替ができます。
 
 ## 8. ローカルLLM（Ollama）による開発補助
 
@@ -177,17 +213,30 @@ python -m adsb.ollama_assist "TC5-8の地上位置デコードを追加して" -
 | 段階 | 内容 |
 |---|---|
 | 1（完了） | デコーダ／エンコーダ、航空機状態、写像、シミュレータ、PPM変復調、受信CLI、Type 9ブリッジ、Ollama補助、テスト |
-| 2（本PR） | `$PADSB`、Docker Compose化、eNMEA2000の `Loop-Back.sh` への組込み、eNMEA2000のDBへ `icao` 列と `?icao=` 絞り込み、本体GISの航空機シンボル・高度表示・航跡詳細 |
-| 3 | シミュレータWeb画面（機数・航路・緊急スクォーク）、RTL-TCP配信（dump1090へI/Qを直接供給）、TC5–8地上位置、TC28/29/31、DF4/5/20/21 |
+| 2（完了） | `$PADSB`、Docker Compose化、eNMEA2000の `Loop-Back.sh` への組込み、eNMEA2000のDBへ `icao` 列と `?icao=` 絞り込み、本体GISの航空機シンボル・高度表示・航跡詳細 |
+| 3a（本PR） | SDR送信模擬部（rtl_tcp 1236）、受信部の rtl_tcp／USB RTL-SDR 入力と逐次復調、Composeの既定経路を I/Q 経由に、`compose.usb.yaml` |
+| 3b | シミュレータWeb画面（機数・航路・緊急スクォーク）、TC5–8地上位置、TC28/29/31、DF4/5/20/21 |
 | 4 | 実機検証（RTL-SDR + readsb、受信局位置、MLATなし）、AWS配備、iPad版への航空機表示 |
 
 ## 10. 検証状況
 
 - `tests/test_adsb.py`：公開資料の既知フレーム（KLM1023、52.2572N/3.91937E、159kt/182.88°/−832fpm）、CRC誤り検出、世界4地点のCPR往復、PPM変復調（雑音・20kHzずれ）、シミュレータ→受信→Type 9（pyais復号）、TCP転送、Ollama API呼出し（模擬サーバ）。
 - `$PADSB` の書式・チェックサム、受信部から`$PADSB`／Type 9 のTCP転送。
-- Docker Compose（シミュレータ→受信部→ホストのTCP 10111）で `$PADSB` が届くこと（GitHub Actionsの `docker` ジョブ）。
+- `tests/test_sdr.py`：逐次復調が一括復調と一致すること（区切り位置3通り）、送信模擬部→rtl_tcp→受信の全フレーム到達、未接続時の破棄、rtl_tcp以外のサーバの拒否。
+- Docker Compose（シミュレータ→SDR送信模擬部→受信部→ホストのTCP 10111）で `$PADSB` が届くこと（GitHub Actionsの `docker` ジョブ）。
 - eNMEA2000本体と連接し、地図に航空機と「呼出符号 FL高度」、航跡詳細が表示されること（eNMEA2000側のブラウザ試験）。
-- 実機RTL-SDR、dump1090/readsbとの接続、Docker Desktop（Mac）、端末上のOllama CLI実行は**未確認**です。
+- 実機RTL-SDR（rtl_tcp／USB）、dump1090/readsbとの接続、Docker Desktop（Mac）、端末上のOllama CLI実行は**未確認**です。
+
+## 11. 受信部の統合検討（結論：現状維持）
+
+AIS（eNMEA2000のSDR受信部）とADS-B（本リポジトリの受信部）を1つにまとめられるか検討し、**現状の2受信部・ドングル2本構成を維持**すると決めました。
+
+| 案 | 結果 | 理由 |
+|---|---|---|
+| 広帯域の常時モニタリング（1台で両帯域） | 不可 | 162 MHzと1090 MHzは約930 MHz離れている。RTL-SDR（約2.4 MHz）、Airspy（10 MHz）、HackRF（20 MHz）では同時に覆えない。掃引ではADS-Bの120 µsのバーストやAISのスロットを取りこぼす |
+| 複数チャンネルの同時復調 | 帯域内は実施済み | AIS 1ch／2chはAIS-catcherがドングル1本で同時に復調している。帯域をまたぐ2チャンネル化はできない |
+| 独立2チューナーの機器（SDRplay RSPduo、各2 MHz幅） | 保留 | 1台で両帯域を受けられる。ただし専用APIが必要で、Docker（MacのARM）での動作と、ADS-Bを2 MHz幅で受けたときの感度は未確認。AD9361系（USRP B210、bladeRF）は2系統の受信が局部発振器を共用するため対象外 |
+| 受信ソフトの統合（ドングル2本のまま） | 見送り | 管理画面と設定は1つにできるが、現状でも両受信部とも本体のTCP 10111へ入っており、運用上の必要性が小さい |
 
 ## 参照
 

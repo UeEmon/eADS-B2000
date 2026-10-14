@@ -1,6 +1,11 @@
-# ADS-B simulator + receiver. The receiver forwards $PADSB to the eNMEA2000
-# app on the host (TCP 10111). Start eNMEA2000 first (bash Loop-Back.sh or docker compose up).
+# ADS-B loop-back, the same shape as eNMEA2000's AIS chain:
+#   simulator (AVR 30002) -> sdr-tx (PPM I/Q, rtl_tcp 1236) -> receiver -> $PADSB -> eNMEA2000 TCP 10111
+# Start eNMEA2000 first (bash Loop-Back.sh or docker compose up).
+# Real RTL-SDR instead of the simulated chain: see docs/ADSB_DESIGN.md 7.2.
 name: eadsb2000
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
 services:
   simulator:
     build: .
@@ -17,22 +22,39 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
+    logging: *logging
+  sdr-tx:
+    build: .
+    image: eadsb2000:local
+    restart: unless-stopped
+    init: true
+    # Software I/Q only. Nothing is transmitted on 1090 MHz.
+    command: ["python", "-m", "adsb.sdrtx", "--avr-tcp", "simulator:30002", "--rtltcp", "1236",
+              "--amplitude", "${ADSB_TX_AMPLITUDE:-0.6}", "--noise", "${ADSB_TX_NOISE:-0.02}"]
+    ports:
+      - "${ADSB_BIND:-127.0.0.1}:1236:1236/tcp"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 1236), 3).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      simulator:
+        condition: service_healthy
+    logging: *logging
   receiver:
     build: .
     image: eadsb2000:local
     restart: unless-stopped
     init: true
-    # ADSB_SOURCE: simulator:30002, or a real dump1090/readsb raw feed (host:30002)
-    command: ["python", "-m", "adsb.receiver", "--avr-tcp", "${ADSB_SOURCE:-simulator:30002}",
+    # ADSB_INPUT/ADSB_SOURCE: --rtltcp sdr-tx:1236 (default, simulated I/Q),
+    #   --rtltcp host.docker.internal:1234 (real RTL-SDR via rtl_tcp on the host),
+    #   --avr-tcp host:30002 (dump1090/readsb raw output)
+    command: ["python", "-m", "adsb.receiver", "${ADSB_INPUT:---rtltcp}", "${ADSB_SOURCE:-sdr-tx:1236}",
               "--forward", "${ENMEA_TARGET:-host.docker.internal:10111}", "--format", "${ADSB_FORMAT:-padsb}", "--quiet"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      simulator:
+      sdr-tx:
         condition: service_healthy
-    logging:
-      driver: json-file
-      options: {max-size: "10m", max-file: "3"}
+    logging: *logging

@@ -1,0 +1,13 @@
+# Linux Docker Engine only: USB RTL-SDR directly in the receiver container.
+#   docker compose -f compose.yaml -f compose.usb.yaml up -d --build --no-deps receiver
+# Root is limited to the receiver for USB access. Docker Desktop (Mac/Windows)
+# cannot pass USB through; run rtl_tcp on the host instead (ADSB_SOURCE).
+services:
+  receiver:
+    user: "0:0"
+    command: ["python", "-m", "adsb.receiver", "--rtlsdr", "${ADSB_USB_DEVICE:-0}",
+              "--forward", "${ENMEA_TARGET:-host.docker.internal:10111}", "--format", "${ADSB_FORMAT:-padsb}", "--quiet"]
+    device_cgroup_rules:
+      - "c 189:* rmw"
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
