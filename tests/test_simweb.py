@@ -15,10 +15,12 @@ def web(tmp_path):
     httpd = simweb.serve(sim, 0, '127.0.0.1')
     base = f'http://127.0.0.1:{httpd.server_address[1]}'
 
-    def call(method, path, body=None, ctype='application/json'):
+    def call(method, path, body=None, ctype='application/json', origin=None):
         data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
-        req = urllib.request.Request(base + path, data=data, method=method,
-                                     headers={'Content-Type': ctype} if data is not None else {})
+        headers = {'Content-Type': ctype} if data is not None else {}
+        if origin:
+            headers['Origin'] = origin
+        req = urllib.request.Request(base + path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, json.loads(r.read()) if 'json' in r.headers['Content-Type'] else r.read()
@@ -90,3 +92,16 @@ def test_frames_carry_the_set_values():
     state = rx.tracker.aircraft['86D3A1']
     assert state['callsign'] == 'JAL123' and state['altitude_ft'] == 12000
     assert state['ground_speed_kt'] == pytest.approx(360, abs=1)
+
+
+def test_writes_reject_other_origins_and_rebinding(web):
+    sim, call = web
+    from adsb.simweb import write_allowed
+    assert write_allowed({'Host': '127.0.0.1:8091'})
+    assert write_allowed({'Host': 'localhost:8091', 'Origin': 'http://localhost:8091'})
+    assert write_allowed({'Host': '192.168.1.5:8091', 'Origin': 'http://192.168.1.5:8091'})
+    assert not write_allowed({'Host': 'localhost:8091', 'Origin': 'http://evil.example'})
+    assert not write_allowed({'Host': 'evil.example:8091'})
+    before = sim.snapshot()['aircraft']
+    status, data = call('PUT', '/api/aircraft', {'aircraft': [ROW]}, origin='http://evil.example')
+    assert status == 403 and sim.snapshot()['aircraft'] == before

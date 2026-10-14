@@ -3,6 +3,8 @@
 Same trust model as eNMEA2000's NMEA emulator: no login, bound to localhost by
 the compose file. Writes require a JSON body, so a page on another origin
 cannot change the fleet without a CORS preflight, which this server never allows.
+Writes also require an Origin (when sent) matching the Host, and a Host that is
+localhost or an IP address, which defeats DNS rebinding.
 
     GET  /                    settings page
     GET  /api/aircraft        current (dead-reckoned) state of every aircraft
@@ -12,13 +14,34 @@ cannot change the fleet without a CORS preflight, which this server never allows
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import threading
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 STATIC = Path(__file__).with_name('static')
 MAX_BODY = 1 << 20
+
+
+def _host_ok(host: str) -> bool:
+    name = urlsplit('//' + host).hostname or ''
+    if name == 'localhost':
+        return True
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return False
+
+
+def write_allowed(headers) -> bool:
+    host = headers.get('Host', '')
+    if not _host_ok(host):
+        return False
+    origin = headers.get('Origin')
+    return origin is None or urlsplit(origin).netloc == host
 
 
 def make_handler(sim):
@@ -41,6 +64,8 @@ def make_handler(sim):
             self._send(status, json.dumps(data, ensure_ascii=False).encode(), 'application/json; charset=utf-8')
 
         def _body(self):
+            if not write_allowed(self.headers):
+                raise PermissionError('origin or host not allowed')
             if not self.headers.get('Content-Type', '').startswith('application/json'):
                 raise ValueError('Content-Type must be application/json')
             length = int(self.headers.get('Content-Length') or 0)
@@ -64,6 +89,8 @@ def make_handler(sim):
             try:
                 body = self._body()
                 count = sim.replace(body.get('aircraft') if isinstance(body, dict) else body)
+            except PermissionError as e:
+                return self._json(403, {'error': str(e)})
             except ValueError as e:      # json.JSONDecodeError is a ValueError
                 return self._json(400, {'error': str(e)})
             self._json(200, {'count': count})
@@ -78,6 +105,8 @@ def make_handler(sim):
                 count = sim.randomize(int(body.get('count', 20)),
                                       (float(body.get('lat', sim.centre[0])), float(body.get('lon', sim.centre[1]))),
                                       float(body.get('radius_nm', sim.radius)), body.get('seed'))
+            except PermissionError as e:
+                return self._json(403, {'error': str(e)})
             except (TypeError, ValueError) as e:
                 return self._json(400, {'error': str(e)})
             self._json(200, {'count': count})

@@ -82,6 +82,7 @@ class Aircraft:
 
 
 MAX_ALT_FT = 50000
+SAVE_EVERY_S = 10
 MAX_AIRCRAFT = 500
 CALLSIGN_CHARS = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ')
 # name: (low, high) - limits the DF17 encoders can represent
@@ -250,8 +251,11 @@ def run(args):
     if args.web:
         from . import simweb
         simweb.serve(sim, args.web, args.web_host)
-    iq_frames, t, dt = [], 0.0, 0.5
+    iq_frames, t, dt, saved = [], 0.0, 0.5, 0.0
     while args.seconds is None or t < args.seconds:
+        if t - saved >= SAVE_EVERY_S:
+            sim.save()                   # restart from the predicted positions, not the set ones
+            saved = t
         for frame in sim.tick(dt):
             if args.iq:
                 iq_frames.append(frame)
