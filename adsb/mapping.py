@@ -13,6 +13,8 @@ Three outputs are provided:
   limited to 4094 m by the AIS format; it is a bridge for testing, not a
   replacement for a native ADS-B view.
 """
+from __future__ import annotations
+
 import json
 from datetime import datetime, timezone
 

@@ -6,7 +6,7 @@
 
 ## すぐ試す
 
-Python 3.12以上：
+Python 3.9以上（macOS標準の `python3` でも動きます）：
 
 ```bash
 python -m pip install -r requirements-dev.txt

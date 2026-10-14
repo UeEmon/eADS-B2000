@@ -7,10 +7,14 @@ on:
 jobs:
   python:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.9 is the python3 that ships with macOS (Command Line Tools)
+        python-version: ['3.9', '3.12']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with: {python-version: '${{ matrix.python-version }}'}
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -q
       - run: python -m adsb.simulator --count 5 --seconds 10 --seed 1 --iq traffic.cu8 --noise 0.03

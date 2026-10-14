@@ -1,4 +1,6 @@
 """Per-aircraft state built from decoded DF17/18 messages."""
+from __future__ import annotations
+
 import time
 from . import modes
 

@@ -4,6 +4,8 @@ Encoder and decoder share the same bit layout so the simulator and the
 receiver round-trip each other. Only extended squitter (DF17/18) frames are
 decoded; DF4/5/20/21 address-parity replies are out of scope for now.
 """
+from __future__ import annotations
+
 import math
 
 CHARSET = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ##### ###############0123456789######'

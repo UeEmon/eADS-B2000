@@ -4,6 +4,8 @@ Mirrors sdr-tx/modulator.py for AIS: produces CU8 I/Q (rtl_sdr / rtl_tcp
 format) that dump1090/readsb can read, and a reference demodulator used by
 tests and the software loop-back path.
 """
+from __future__ import annotations
+
 import numpy as np
 from . import modes
 

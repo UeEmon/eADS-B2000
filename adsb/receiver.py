@@ -7,6 +7,8 @@
     # from an I/Q recording made by adsb.simulator --iq or rtl_sdr -s 2000000 -f 1090e6
     python -m adsb.receiver --iq traffic.cu8
 """
+from __future__ import annotations
+
 import argparse
 import json
 import socket
