@@ -14,11 +14,16 @@ services:
     init: true
     command: ["python", "-m", "adsb.simulator", "--tcp", "30002",
               "--count", "${ADSB_COUNT:-20}", "--lat", "${ADSB_LAT:-35.5494}",
-              "--lon", "${ADSB_LON:-139.7798}", "--radius", "${ADSB_RADIUS_NM:-60}"]
+              "--lon", "${ADSB_LON:-139.7798}", "--radius", "${ADSB_RADIUS_NM:-60}",
+              "--web", "8091", "--state", "/data/fleet.json"]
     ports:
       - "${ADSB_BIND:-127.0.0.1}:30002:30002/tcp"
+      # ADS-B simulator settings page (no login, like the NMEA emulator: keep it on localhost)
+      - "${ADSB_BIND:-127.0.0.1}:${ADSB_WEB_PORT:-8091}:8091/tcp"
+    volumes:
+      - sim-data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 30002), 3).close()"]
+      test: ["CMD", "python", "-c", "import socket; [socket.create_connection(('127.0.0.1', p), 3).close() for p in (30002, 8091)]"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -58,3 +63,5 @@ services:
       sdr-tx:
         condition: service_healthy
     logging: *logging
+volumes:
+  sim-data:
