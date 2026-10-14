@@ -102,6 +102,7 @@ ADS-BはAISとは別のデータとして扱います。航空機をAIS Type 9�
 ## 6. シミュレータ
 
 - 中心（既定：羽田 RJTT 35.5494, 139.7798）から半径60NM内に指定機数を配置し、大圏航法で移動、範囲外に出ると毎秒3度で中心方向へ旋回します。
+- Web画面（6.2節）で設定した航空機は、設定時の位置から速度・針路・昇降率で推測航法を続けます（範囲外でも旋回しません）。
 - ICAOは日本の割当ブロック（0x840000〜0x87FFFF）から乱数で採番、呼出符号は国内外航空会社の3レターコード＋便名です。
 - 0.5秒ごとに位置（偶奇交互）と速度、5秒ごとに識別を送ります（実機の送信間隔に近い値）。
 - 出力：AVRテキスト（標準出力、またはdump1090互換のTCPサーバ）、またはCU8 I/Qファイル（雑音・周波数ずれ指定可）。
@@ -112,6 +113,15 @@ ADS-BはAISとは別のデータとして扱います。航空機をAIS Type 9�
 - I/Qは **rtl_tcp互換サーバ（TCP 1236）** で実時間に合わせて配信します（`RTL0`ヘッダ、周波数・サンプルレート・利得コマンドを受付）。受信部・dump1090 `--net-rtltcp` などの rtl_tcp クライアントがそのまま接続できます。
 - 同時接続は1クライアント。未接続中のフレームは捨て、2秒以上滞留したフレームも捨てます（eNMEA2000の送信模擬部と同じ方針）。
 - 2 Msps・1090 MHz以外を要求されたら警告します。
+
+### 6.2 シミュレータWeb画面（`adsb.simweb`）
+
+- `python -m adsb.simulator --web 8091 --state fleet.json`、Composeでは http://localhost:8091 です。eNMEA2000のNMEAエミュレータと同じくログインはなく、localhostにだけ公開します。
+- 複数機の諸元（ICAO、呼出符号、緯度、経度、気圧高度ft、対地速度kt、針路°、昇降率ft/min、カテゴリ）を表またはCSV貼り付けで一括設定します。適用すると機体群を丸ごと置き換え、1件でも不正値があれば何も変えません。
+- 位置は時刻の経過に合わせて推測位置で更新し、画面にも現在の推測位置を表示します。
+- 設定は `--state` のJSON（Composeでは `sim-data` ボリュームの `/data/fleet.json`）に保存し、再起動後も同じ機体群から再開します。
+- API：`GET /api/aircraft`（現在状態）、`PUT /api/aircraft`（`{"aircraft": [...]}` で一括置換）、`POST /api/aircraft/random`（`count`・`lat`・`lon`・`radius_nm` で乱数生成）。書込みは `Content-Type: application/json` のみ受け付けます。
+- 範囲：緯度±90、経度±180、高度0〜50000 ft、速度0〜1000 kt、針路0〜360°、昇降率±32000 ft/min、カテゴリ0〜7、最大500機（DF17で表せる範囲）。
 
 **I/Qはソフトウェア試験専用です。1090 MHzでの電波発射は電波法上許されません。** eNMEA2000のSDR送信模擬部と同様、RF送信機・アンテナへは出力しません。
 
@@ -153,7 +163,8 @@ docker compose up -d --build --wait
 | 変数 | 既定値 | 内容 |
 |---|---|---|
 | `ADSB_COUNT` / `ADSB_LAT` / `ADSB_LON` / `ADSB_RADIUS_NM` | 20 / 35.5494 / 139.7798 / 60 | シミュレータの機数・中心・半径 |
-| `ADSB_BIND` | 127.0.0.1 | シミュレータのAVR出力（30002）の公開先 |
+| `ADSB_BIND` | 127.0.0.1 | シミュレータのAVR出力（30002）とWeb画面の公開先 |
+| `ADSB_WEB_PORT` | 8091 | シミュレータWeb画面のホスト側ポート（6.2節） |
 | `ADSB_TX_AMPLITUDE` / `ADSB_TX_NOISE` | 0.6 / 0.02 | SDR送信模擬部の振幅・雑音 |
 | `ADSB_INPUT` | `--rtltcp` | 受信部の入力種別（`--rtltcp` または `--avr-tcp`） |
 | `ADSB_SOURCE` | sdr-tx:1236 | 受信部の入力元 `host:port` |
@@ -232,7 +243,7 @@ python -m adsb.ollama_assist "TC5-8の地上位置デコードを追加して" -
 | 2（完了） | `$PADSB`、Docker Compose化、eNMEA2000の `Loop-Back.sh` への組込み、eNMEA2000のDBへ `icao` 列と `?icao=` 絞り込み、本体GISの航空機シンボル・高度表示・航跡詳細 |
 | 3a（本PR） | SDR送信模擬部（rtl_tcp 1236）、受信部の rtl_tcp／USB RTL-SDR 入力と逐次復調、Composeの既定経路を I/Q 経由に、`compose.usb.yaml` |
 | 3c（本PR） | ADS-BをAISから分離（Type 9ブリッジを廃止し、iPadへも `$PADSB`） |
-| 3b | シミュレータWeb画面（機数・航路・緊急スクォーク）、TC5–8地上位置、TC28/29/31、DF4/5/20/21 |
+| 3b（一部） | シミュレータWeb画面（複数機の諸元の一括設定、推測位置の更新）。緊急スクォーク、TC5–8地上位置、TC28/29/31、DF4/5/20/21は未着手 |
 | 4 | 実機検証（RTL-SDR + readsb、受信局位置、MLATなし）、AWS配備 |
 
 ## 10. 検証状況
@@ -240,6 +251,7 @@ python -m adsb.ollama_assist "TC5-8の地上位置デコードを追加して" -
 - `tests/test_adsb.py`：公開資料の既知フレーム（KLM1023、52.2572N/3.91937E、159kt/182.88°/−832fpm）、CRC誤り検出、世界4地点のCPR往復、PPM変復調（雑音・20kHzずれ）、シミュレータ→受信→航空機状態→`$PADSB`、TCP転送、Ollama API呼出し（模擬サーバ）。
 - `$PADSB` の書式・チェックサム、受信部から`$PADSB`のTCP転送。
 - 複数出力：出力先指定の解釈と不正値の拒否、TCPとUDPへの`$PADSB`同時送信、接続できない宛先があっても他の宛先へ届くこと。
+- `tests/test_simweb.py`：Web APIでの一括置換と保存・再読込、推測航法（1分後の位置・高度）、範囲外でも直進すること、不正値・重複・JSON以外の拒否、乱数生成、設定値がフレームに載ること。
 - `tests/test_sdr.py`：逐次復調が一括復調と一致すること（区切り位置3通り）、送信模擬部→rtl_tcp→受信の全フレーム到達、未接続時の破棄、rtl_tcp以外のサーバの拒否。
 - Docker Compose（シミュレータ→SDR送信模擬部→受信部→ホストのTCP 10111）で `$PADSB` が届くこと（GitHub Actionsの `docker` ジョブ）。
 - eNMEA2000本体と連接し、地図に航空機と「呼出符号 FL高度」、航跡詳細が表示されること（eNMEA2000側のブラウザ試験）。
