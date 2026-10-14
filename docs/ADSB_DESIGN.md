@@ -33,8 +33,9 @@ flowchart TD
  U["実機RTL-SDR<br/>rtl_tcp :1234 / USB直結"] -->|CU8 I/Q 2Msps| R
  D["dump1090 / readsb"] -->|AVR TCP 30002| R
  R -->|JSON行（eNMEA2000イベント形式）| J["保存・解析"]
- R -->|$PADSB TCP 10111（既定）／AIS Type 9（旧版向け）| A["eNMEA2000本体"]
- A --> G["Cesium GIS / PostgreSQL / iPad"]
+ R -->|$PADSB TCP 10111| A["eNMEA2000本体"]
+ R -->|$PADSB UDP/TCP（複数可）| I["iPad版など"]
+ A --> G["Cesium GIS / PostgreSQL"]
 ```
 
 - 既定の経路は eNMEA2000 のAIS系と同じ形です：シミュレータ → **SDR送信模擬部**（I/Qを rtl_tcp で配信）→ 受信部（復調）→ `$PADSB` → **eNMEA2000本体（TCP 10111）**。受信部の出力は常に本体へ入ります。
@@ -90,14 +91,13 @@ $PADSB,86D3A1,JAL123,35.549400,139.779800,12500,420.0,287.0,-1472,3*hh
 - eNMEA2000本体はICAOを `events.icao` 列に保存し、地図に航空機シンボル（「呼出符号 FL高度」）を描き、右側の航跡詳細に高度・速度・航跡・昇降率を表示します（eNMEA2000側の対応が必要です）。
 - 位置が確定していない航空機は送信しません。1機あたり1秒に1回までです。
 
-### 5.3 AIS Type 9 ブリッジ（`ais_type9`、`--format ais9`）
+### 5.3 AISとの分離（AIS Type 9 ブリッジは廃止）
 
-`$PADSB` に未対応のeNMEA2000やiPad版で航空機を表示するため、航空機状態を AIS Type 9（捜索救難航空機位置通報）の `!AIVDM` に変換し、本体のTCP 10111へ送ります。
+ADS-BはAISとは別のデータとして扱います。航空機をAIS Type 9（捜索救難航空機位置通報）に変換する機能は廃止しました（2026-10-14）。
 
-- MMSIは疑似値 `100000000 + ICAO(10進)`。実在のMMSIと区別できないため、**試験用途に限定**します。
-- 高度はAISの上限で0〜4094 mに丸めます。速度はノット（0〜1022）、針路は0.1度単位です。
-- 1機あたり1秒に1回まで送信します。
-- 生成した文は pyais（eNMEA2000本体と同じ3.2.3）でType 9として復号できることをテストで確認しています。eNMEA2000の `app/parser.py` での受理も確認済みです（2026-10-13、eNMEA2000側で実行）。
+- eNMEA2000本体とiPad版はどちらも `$PADSB` を直接受け、航空機をICAOアドレス単位の別トラックとして表示します。
+- 疑似MMSIが実在の船舶・SAR機と区別できない、高度がAISの上限4094 mで切れる、という問題がなくなります。
+- `--format ais9` と `ADSB_FORMAT` は削除しました。出力先の `/ais9` 指定はエラーになります。
 
 ## 6. シミュレータ
 
@@ -127,7 +127,6 @@ python -m adsb.receiver --avr-tcp localhost:30002
 
 # 2) 受信部 → eNMEA2000本体（$PADSB）。本体を起動しておく
 python -m adsb.receiver --avr-tcp localhost:30002 --forward localhost:10111 --quiet
-#    $PADSB未対応の本体・iPad向け: --format ais9
 
 # 3) I/Qで変復調まで試験
 python -m adsb.simulator --count 8 --seconds 30 --iq traffic.cu8 --noise 0.03
@@ -161,7 +160,6 @@ docker compose up -d --build --wait
 | `ADSB_USB_DEVICE` | 0 | USB直結時のRTL-SDR番号（`compose.usb.yaml`） |
 | `ADSB_OUTPUTS` | tcp://host.docker.internal:10111 | 出力先（複数可、7.3節） |
 | `ENMEA_TARGET` | host.docker.internal:10111 | `ADSB_OUTPUTS` 未指定時の本体TCP（旧設定との互換用） |
-| `ADSB_FORMAT` | padsb | 書式を省略した出力先の書式（`padsb` または `ais9`） |
 
 eNMEA2000の `bash Loop-Back.sh` は、eNMEA2000と同じ階層に本リポジトリ（`eADS-B2000`）がある場合、または `ADSB_DIR` を指定した場合に、このComposeも起動します。
 
@@ -188,21 +186,20 @@ ADSB_INPUT=--avr-tcp ADSB_SOURCE=192.168.1.50:30002 docker compose up -d --build
 
 ### 7.3 複数の出力先（本体＋iPad等）
 
-受信部は、本体以外にもiPadなど複数の宛先へ同時に出力できます。`--output`（Composeでは `ADSB_OUTPUTS`）に、カンマ区切りで `プロトコル://ホスト:ポート/書式` を並べます。
+受信部は、本体以外にもiPadなど複数の宛先へ同時に出力できます。`--output`（Composeでは `ADSB_OUTPUTS`）に、カンマ区切りで `プロトコル://ホスト:ポート` を並べます。どの宛先にも `$PADSB` を送ります。
 
 | 項目 | 指定 |
 |---|---|
 | プロトコル | `tcp`（接続して送信、切断時は5秒後に再接続）、`udp`（ユニキャスト） |
-| 書式 | `padsb`（eNMEA2000本体）、`ais9`（iPad版など `$PADSB` 未対応の受信側。AIS Type 9として表示）。省略すると `--format` の値 |
 | 件数 | 制限なし。1つの宛先が落ちても他の宛先への送信は続く |
 
 ```bash
-# 本体（$PADSB/TCP）と iPad 2台（AIS Type 9/UDP）へ同時出力
-ADSB_OUTPUTS="tcp://host.docker.internal:10111,udp://192.168.1.30:10110/ais9,udp://192.168.1.31:10110/ais9" \
+# 本体（TCP）と iPad 2台（UDP）へ同時出力。すべて $PADSB
+ADSB_OUTPUTS="tcp://host.docker.internal:10111,udp://192.168.1.30:10110,udp://192.168.1.31:10110" \
   docker compose up -d --build --wait
 ```
 
-iPadのアドレスはLANのIPです（iPad版の受信設定、初期値UDP 10110／TCP 10111）。eNMEA2000の `Loop-Back.sh` から起動する場合も、同じ `ADSB_OUTPUTS` がそのまま効きます。
+iPadのアドレスはLANのIPです（iPad版の受信設定、初期値UDP 10110／TCP 10111）。iPad版は `$PADSB` を受けて航空機として表示します（eNMEA2000のiPad版の `$PADSB` 対応が必要です）。eNMEA2000の `Loop-Back.sh` から起動する場合も、同じ `ADSB_OUTPUTS` がそのまま効きます。
 
 ## 8. ローカルLLM（Ollama）による開発補助
 
@@ -231,17 +228,18 @@ python -m adsb.ollama_assist "TC5-8の地上位置デコードを追加して" -
 
 | 段階 | 内容 |
 |---|---|
-| 1（完了） | デコーダ／エンコーダ、航空機状態、写像、シミュレータ、PPM変復調、受信CLI、Type 9ブリッジ、Ollama補助、テスト |
+| 1（完了） | デコーダ／エンコーダ、航空機状態、写像、シミュレータ、PPM変復調、受信CLI、Type 9ブリッジ（段階3cで廃止）、Ollama補助、テスト |
 | 2（完了） | `$PADSB`、Docker Compose化、eNMEA2000の `Loop-Back.sh` への組込み、eNMEA2000のDBへ `icao` 列と `?icao=` 絞り込み、本体GISの航空機シンボル・高度表示・航跡詳細 |
 | 3a（本PR） | SDR送信模擬部（rtl_tcp 1236）、受信部の rtl_tcp／USB RTL-SDR 入力と逐次復調、Composeの既定経路を I/Q 経由に、`compose.usb.yaml` |
+| 3c（本PR） | ADS-BをAISから分離（Type 9ブリッジを廃止し、iPadへも `$PADSB`） |
 | 3b | シミュレータWeb画面（機数・航路・緊急スクォーク）、TC5–8地上位置、TC28/29/31、DF4/5/20/21 |
-| 4 | 実機検証（RTL-SDR + readsb、受信局位置、MLATなし）、AWS配備、iPad版への航空機表示 |
+| 4 | 実機検証（RTL-SDR + readsb、受信局位置、MLATなし）、AWS配備 |
 
 ## 10. 検証状況
 
-- `tests/test_adsb.py`：公開資料の既知フレーム（KLM1023、52.2572N/3.91937E、159kt/182.88°/−832fpm）、CRC誤り検出、世界4地点のCPR往復、PPM変復調（雑音・20kHzずれ）、シミュレータ→受信→Type 9（pyais復号）、TCP転送、Ollama API呼出し（模擬サーバ）。
-- `$PADSB` の書式・チェックサム、受信部から`$PADSB`／Type 9 のTCP転送。
-- 複数出力：出力先指定の解釈と不正値の拒否、TCP（`$PADSB`）とUDP（Type 9）への同時送信、接続できない宛先があっても他の宛先へ届くこと。
+- `tests/test_adsb.py`：公開資料の既知フレーム（KLM1023、52.2572N/3.91937E、159kt/182.88°/−832fpm）、CRC誤り検出、世界4地点のCPR往復、PPM変復調（雑音・20kHzずれ）、シミュレータ→受信→航空機状態→`$PADSB`、TCP転送、Ollama API呼出し（模擬サーバ）。
+- `$PADSB` の書式・チェックサム、受信部から`$PADSB`のTCP転送。
+- 複数出力：出力先指定の解釈と不正値の拒否、TCPとUDPへの`$PADSB`同時送信、接続できない宛先があっても他の宛先へ届くこと。
 - `tests/test_sdr.py`：逐次復調が一括復調と一致すること（区切り位置3通り）、送信模擬部→rtl_tcp→受信の全フレーム到達、未接続時の破棄、rtl_tcp以外のサーバの拒否。
 - Docker Compose（シミュレータ→SDR送信模擬部→受信部→ホストのTCP 10111）で `$PADSB` が届くこと（GitHub Actionsの `docker` ジョブ）。
 - eNMEA2000本体と連接し、地図に航空機と「呼出符号 FL高度」、航跡詳細が表示されること（eNMEA2000側のブラウザ試験）。
@@ -262,5 +260,4 @@ AIS（eNMEA2000のSDR受信部）とADS-B（本リポジトリの受信部）を
 
 - Junzi Sun, *The 1090 Megahertz Riddle*（第2版） https://mode-s.org/1090mhz/
 - RTCA DO-260B / EUROCAE ED-102A（1090ES MOPS）
-- ITU-R M.1371-6（AIS Type 9）
 - Ollama API https://github.com/ollama/ollama/blob/main/docs/api.md

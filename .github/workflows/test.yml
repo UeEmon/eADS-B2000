@@ -23,16 +23,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Two outputs at once: $PADSB/TCP (eNMEA2000) and AIS Type 9/UDP (iPad stand-in).
+      # Two outputs at once, both $PADSB: TCP (eNMEA2000) and UDP (iPad stand-in).
       - run: python3 scripts/wait_padsb.py 10111 5 > padsb.log &
-      - run: python3 scripts/wait_padsb.py 10110 5 udp '!AIVDM,' > ais9.log &
+      - run: python3 scripts/wait_padsb.py 10110 5 udp > udp.log &
       - run: docker compose up -d --build --wait
         env:
-          ADSB_OUTPUTS: tcp://host.docker.internal:10111,udp://host.docker.internal:10110/ais9
+          ADSB_OUTPUTS: tcp://host.docker.internal:10111,udp://host.docker.internal:10110
       - run: |
-          for i in $(seq 60); do grep -q '^OK:' padsb.log && grep -q '^OK:' ais9.log && break; sleep 2; done
-          cat padsb.log ais9.log
-          grep -q '^OK:' padsb.log && grep -q '^OK:' ais9.log
+          for i in $(seq 60); do grep -q '^OK:' padsb.log && grep -q '^OK:' udp.log && break; sleep 2; done
+          cat padsb.log udp.log
+          grep -q '^OK:' padsb.log && grep -q '^OK:' udp.log
       - if: always()
         run: docker compose logs --tail=50
       - if: always()

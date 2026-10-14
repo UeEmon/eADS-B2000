@@ -1,7 +1,7 @@
 """Stand-in for an eNMEA2000/iPad input: wait for ADS-B sentences (CI / local check).
 
     python3 scripts/wait_padsb.py 10111 5                 # $PADSB over TCP (eNMEA2000)
-    python3 scripts/wait_padsb.py 10110 5 udp '!AIVDM,'   # AIS Type 9 over UDP (iPad)
+    python3 scripts/wait_padsb.py 10110 5 udp             # $PADSB over UDP (iPad)
 """
 import socket
 import sys
