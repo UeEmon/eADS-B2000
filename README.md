@@ -1,5 +1,7 @@
 # eADS-B2000
 
+> **移転しました（2026-10-14）**：このリポジトリは [eNMEA2000 の `adsb/`](https://github.com/UeEmon/eNMEA2000/tree/main/adsb) に履歴ごと統合されました（[eNMEA2000 #37](https://github.com/UeEmon/eNMEA2000/pull/37)）。今後の開発・Issue・PRは eNMEA2000 で行います。このリポジトリは読み取り専用で保管しています。
+
 [eNMEA2000](https://github.com/UeEmon/eNMEA2000)（NMEA0183/AIS受信システム）の構成を流用した、ADS-B（1090ES）受信システムと航空機トラフィックシミュレータです。コーディング補助にローカルLLM（Ollama）を使います。
 
 設計・使い方・段階計画は [docs/ADSB_DESIGN.md](docs/ADSB_DESIGN.md) を参照してください。
